@@ -177,6 +177,11 @@ class CronTab(object):
         self.root      = (os.getuid() == 0)
         self.lines     = None
         self.ansible   = "#Ansible: "
+        self.rootdir   = self.module.params['rootdir']
+        self.wrapper   = ''
+        if self.rootdir:
+    	    self.rootdir = self.rootdir + '/'
+    	    self.wrapper = self.module.get_bin_path('chroot', True) + ' ' + self.rootdir + ' '
 
         # select whether we dump additional debug info through syslog
         self.syslogging = False
@@ -232,12 +237,16 @@ class CronTab(object):
         """
         Write the crontab to the system. Saves all information.
         """
+        tmpdir = ''
+        if self.rootdir:
+    	    tmpdir = self.rootdir + '/tmp'
+    	    
         if backup_file:
             fileh = open(backup_file, 'w')
         elif self.cron_file:
             fileh = open(self.cron_file, 'w')
         else:
-            filed, path = tempfile.mkstemp(prefix='crontab')
+            filed, path = tempfile.mkstemp(prefix='crontab', dir=tmpdir)
             os.chmod(path, 0644)
             fileh = os.fdopen(filed, 'w')
 
@@ -368,6 +377,7 @@ class CronTab(object):
         Returns the command line for reading a crontab
         """
         user = ''
+        cmd = ''
         if self.user:
             if platform.system() == 'SunOS':
                 return "su %s -c '%s -l'" % (pipes.quote(self.user), pipes.quote(CRONCMD))
@@ -377,19 +387,29 @@ class CronTab(object):
                 return "%s %s %s" % (CRONCMD , '-l', pipes.quote(self.user))
             else:
                 user = '-u %s' % pipes.quote(self.user)
-        return "%s %s %s" % (CRONCMD , user, '-l')
+
+        cmd = self.wrapper + CRONCMD
+        return "%s %s %s" % (cmd, user, '-l')
 
     def _write_execute(self, path):
         """
         Return the command line for writing a crontab
         """
         user = ''
+        cmd = ''
+        
+        if self.rootdir:
+    	    n = len(self.rootdir)
+    	    path = path[n:]
+    	    
         if self.user:
             if platform.system() in ['SunOS', 'HP-UX', 'AIX']:
                 return "chown %s %s ; su '%s' -c '%s %s'" % (pipes.quote(self.user), pipes.quote(path), pipes.quote(self.user), CRONCMD, pipes.quote(path))
             else:
                 user = '-u %s' % pipes.quote(self.user)
-        return "%s %s %s" % (CRONCMD , user, pipes.quote(path))
+        
+        cmd = self.wrapper + CRONCMD
+        return "%s %s %s" % (cmd, user, pipes.quote(path))
 
 
 
@@ -426,6 +446,7 @@ def main():
             month=dict(default='*'),
             weekday=dict(aliases=['dow'], default='*'),
             reboot=dict(required=False, default=False, type='bool'),
+            rootdir=dict(default=None, aliases=['jail'], required=False),
             special_time=dict(required=False,
                               default=None,
                               choices=["reboot", "yearly", "annually", "monthly", "weekly", "daily", "hourly"],
@@ -447,6 +468,7 @@ def main():
     month        = module.params['month']
     weekday      = module.params['weekday']
     reboot       = module.params['reboot']
+    rootdir      = module.params['rootdir']
     special_time = module.params['special_time']
     disabled     = module.params['disabled']
     do_install   = state == 'present'
