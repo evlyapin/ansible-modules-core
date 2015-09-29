@@ -190,6 +190,11 @@ options:
         description:
             - An expiry time for the user in epoch, it will be ignored on platforms that do not support this.
               Currently supported on Linux and FreeBSD.
+    rootdir:
+	description:
+    	    - If the job should be modified in jail (FreeBSD) or chroot
+	required: false
+	default: null
 '''
 
 EXAMPLES = '''
@@ -216,6 +221,7 @@ import syslog
 import platform
 import socket
 import time
+import subprocess
 
 try:
     import spwd
@@ -266,6 +272,7 @@ class User(object):
         self.skeleton   = module.params['skeleton']
         self.system     = module.params['system']
         self.login_class = module.params['login_class']
+        self.rootdir    = module.params['rootdir']
         self.append     = module.params['append']
         self.sshkeygen  = module.params['generate_ssh_key']
         self.ssh_bits   = module.params['ssh_key_bits']
@@ -291,10 +298,19 @@ class User(object):
             self.ssh_file = os.path.join('.ssh', 'id_%s' % self.ssh_type)
 
         # select whether we dump additional debug info through syslog
-        self.syslogging = False
+        self.syslogging = True
+
+        self.wrapper = []
+
+	if self.rootdir:
+    	    self.rootdir = self.rootdir + '/'
+    	    self.wrapper = [ self.module.get_bin_path('chroot', True), self.rootdir ]
 
 
     def execute_command(self, cmd, use_unsafe_shell=False, data=None):
+	if len(self.wrapper) == 2:
+            cmd = self.wrapper + cmd
+	    
         if self.syslogging:
             syslog.openlog('ansible-%s' % os.path.basename(__file__))
             syslog.syslog(syslog.LOG_NOTICE, 'Command %s' % '|'.join(cmd))
@@ -577,19 +593,19 @@ class User(object):
 
     def ssh_key_gen(self):
         info = self.user_info()
-        if not os.path.exists(info[5]) and not self.module.check_mode:
+        if not os.path.exists(self.rootdir + info[5]) and not self.module.check_mode:
             return (1, '', 'User %s home directory does not exist' % self.name)
         ssh_key_file = self.get_ssh_key_path()
         ssh_dir = os.path.dirname(ssh_key_file)
-        if not os.path.exists(ssh_dir):
+        if not os.path.exists(self.rootdir + ssh_dir):
             if self.module.check_mode:
                 return (0, '', '')
             try:
-                os.mkdir(ssh_dir, 0700)
-                os.chown(ssh_dir, info[2], info[3])
+                os.mkdir(self.rootdir + ssh_dir, 0700)
+                os.chown(self.rootdir + ssh_dir, info[2], info[3])
             except OSError, e:
                 return (1, '', 'Failed to create %s: %s' % (ssh_dir, str(e)))
-        if os.path.exists(ssh_key_file):
+        if os.path.exists(self.rootdir + ssh_key_file):
             return (None, 'Key already exists', '')
         if self.module.check_mode:
             return (0, '', '')
@@ -612,13 +628,13 @@ class User(object):
         if rc == 0:
             # If the keys were successfully created, we should be able
             # to tweak ownership.
-            os.chown(ssh_key_file, info[2], info[3])
-            os.chown('%s.pub' % ssh_key_file, info[2], info[3])
+            os.chown(self.rootdir + ssh_key_file, info[2], info[3])
+            os.chown(self.rootdir + ssh_key_file + '.pub', info[2], info[3])
         return (rc, out, err)
 
     def ssh_key_fingerprint(self):
         ssh_key_file = self.get_ssh_key_path()
-        if not os.path.exists(ssh_key_file):
+        if not os.path.exists(self.rootdir + ssh_key_file):
             return (1, 'SSH Key file %s does not exist' % ssh_key_file, '')
         cmd = [ self.module.get_bin_path('ssh-keygen', True) ]
         cmd.append('-l')
@@ -630,7 +646,7 @@ class User(object):
     def get_ssh_public_key(self):
         ssh_public_key_file = '%s.pub' % self.get_ssh_key_path()
         try:
-            f = open(ssh_public_key_file)
+            f = open(self.rootdir + ssh_public_key_file)
             ssh_public_key = f.read().strip()
             f.close()
         except IOError:
@@ -697,6 +713,99 @@ class FreeBsdUser(User):
     distribution = None
     SHADOWFILE = '/etc/master.passwd'
 
+    def run_process(self, cmd):
+	if len(self.wrapper) == 2:
+            cmd = self.wrapper + cmd
+
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=None)
+        retcode = p.wait()
+        return p.stdout.readlines()
+
+    def get_group_users(self, group, users):
+        cmd = [ 
+            self.module.get_bin_path('pw', True),
+    	    'usershow',
+    	    '-a'
+    	]
+        for line in self.run_process(cmd):
+            line = line.strip()
+            m = line.split(':')
+            if(m[3] == group and not m[0] in users): users.append(m[0])
+        return users
+
+    def get_gid(self, group):
+        cmd = [ 
+            self.module.get_bin_path('pw', True),
+    	    'usershow',
+    	    group
+    	]
+        m = []
+        users = []
+        for line in self.run_process(cmd):
+            line = line.strip()
+            m = line.split(':')
+            break
+        users = m[3].split(',')
+        gid = m[2]
+        users = self.get_group_users(gid, users)
+        return (m[0], m[1], m[2], users)
+
+    def group_exists(self, group):
+        cmd = [
+            self.module.get_bin_path('pw', True),
+            'groupshow',
+            group
+        ]
+        return not self.execute_command(cmd)[0]
+
+    def group_info(self,group):
+        if not self.group_exists(group):
+            return False
+        return list(self.get_gid(group))
+
+    def get_groups_set(self, remove_existing=True):
+        if self.groups is None:
+            return None
+        info = self.user_info()
+        groups = set(filter(None, self.groups.split(',')))
+        for g in set(groups):
+            if not self.group_exists(g):
+                self.module.fail_json(msg="Group %s does not exist" % (g))
+            if info and remove_existing and self.group_info(g)[2] == info[3]:
+                groups.remove(g)
+        return groups
+
+    def get_groups(self):
+        cmd = [ 
+            self.module.get_bin_path('pw', True),
+    	    'usershow',
+    	    '-a'
+    	]
+        groups = []
+        for line in self.run_process(cmd):
+            line = line.strip()
+            m = line.split(':')
+            syslog.openlog('ansible-%s' % os.path.basename(__file__))
+            group = dict(gr_name = m[0], gr_gid = int(m[2]), gr_mem = m[3].split(','))
+            groups.append(group)
+        return groups
+
+    def user_group_membership(self):
+        groups = []
+        info = self.user_info()
+        for group in self.get_groups():
+            if group['gr_mem'] and self.name in group['gr_mem'] and not info[3] == group['gr_gid']:
+                groups.append(group['gr_name'])
+        return groups
+
+    def user_exists(self):
+        cmd = [
+            self.module.get_bin_path('pw', True),
+            'usershow',
+            self.name
+        ]
+        return not self.execute_command(cmd)[0]
+
     def remove_user(self):
         cmd = [
             self.module.get_bin_path('pw', True),
@@ -714,7 +823,7 @@ class FreeBsdUser(User):
             self.module.get_bin_path('pw', True),
             'useradd',
             '-n',
-            self.name,
+            self.name
         ]
 
         if self.uid is not None:
@@ -880,6 +989,28 @@ class FreeBsdUser(User):
             return self.execute_command(cmd)
 
         return (rc, out, err)
+
+    def user_info(self):
+        if not self.user_exists():
+            return False
+        info = []
+        m = []
+        cmd = [
+            self.module.get_bin_path('pw', True),
+            'usershow',
+            self.name
+        ]
+        (rc, line, err) = self.execute_command(cmd)
+        line = line.strip()
+        m = line.split(':')
+        info.append(m[0])
+        info.append(self.user_password())
+        info.append(int(m[2]))
+        info.append(int(m[3]))
+        info.append(m[7])
+        info.append(m[8])
+        info.append(m[9])
+        return info
 
 # ===========================================
 
@@ -2054,6 +2185,7 @@ def main():
             shell=dict(default=None, type='str'),
             password=dict(default=None, type='str'),
             login_class=dict(default=None, type='str'),
+            rootdir=dict(required=True, aliases=['basedir'], type='str'),
             # following options are specific to userdel
             force=dict(default='no', type='bool'),
             remove=dict(default='no', type='bool'),
@@ -2144,10 +2276,10 @@ def main():
         info = user.user_info()
         if user.home is None:
             user.home = info[5]
-        if not os.path.exists(user.home) and user.createhome:
+        if not os.path.exists(user.rootdir + user.home) and user.createhome:
             if not module.check_mode:
-                user.create_homedir(user.home)
-                user.chown_homedir(info[2], info[3], user.home)
+                user.create_homedir(user.rootdir + user.home)
+                user.chown_homedir(info[2], info[3], user.rootdir + user.home)
             result['changed'] = True
 
         # deal with ssh key

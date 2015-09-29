@@ -74,6 +74,16 @@ options:
         description:
         - Additional arguments provided on the command line
         aliases: [ 'args' ]
+    rootdir:
+	description:
+        - Rootdir if the service should be modified in jail (FreeBSD) or chroot
+	required: false
+        default: null
+    wrapper:
+	description:
+        - Jexec wrapper (or chroot) for the service should be modified in jail (FreeBSD) or chroot
+	required: false
+        default: null
     must_exist:
         required: false
         default: true
@@ -155,6 +165,8 @@ class Service(object):
         self.pattern        = module.params['pattern']
         self.enable         = module.params['enabled']
         self.runlevel       = module.params['runlevel']
+        self.wrapper        = module.params['wrapper']
+        self.rootdir        = module.params['rootdir']
         self.changed        = False
         self.running        = None
         self.crashed        = None
@@ -169,6 +181,13 @@ class Service(object):
         self.rcconf_value   = None
         self.svc_change     = False
 
+        if self.rootdir:
+            self.rootdir = self.rootdir + '/'
+        if len(self.wrapper) > 1:
+            self.wrapper = self.wrapper + ' '
+        elif self.rootdir:
+            self.wrapper = self.module.get_bin_path('chroot', True) + ' ' + self.rootdir + ' '
+        
         # select whether we dump additional debug info through syslog
         self.syslogging = False
 
@@ -195,6 +214,9 @@ class Service(object):
             syslog.openlog('ansible-%s' % os.path.basename(__file__))
             syslog.syslog(syslog.LOG_NOTICE, 'Command %s, daemonize %r' % (cmd, daemonize))
 
+	if len(self.wrapper) > 1:
+	    cmd = self.wrapper + cmd
+	    
         # Most things don't need to be daemonized
         if not daemonize:
             return self.module.run_command(cmd)
@@ -974,14 +996,21 @@ class FreeBsdService(Service):
 
     def service_enable(self):
         if self.enable:
-            self.rcconf_value = "YES"
+	    self.rcconf_value = "YES"
         else:
-            self.rcconf_value = "NO"
+	    self.rcconf_value = "NO"
 
-        rcfiles = [ '/etc/rc.conf','/etc/rc.conf.local', '/usr/local/etc/rc.conf' ]
-        for rcfile in rcfiles:
-            if os.path.isfile(rcfile):
-                self.rcconf_file = rcfile
+        rcconf_dir = '/etc/rc.conf.d'
+        if os.path.isdir(rcconf_dir):
+            if self.rootdir:
+                self.rcconf_file = self.rootdir + rcconf_dir + '/' + self.name
+            else:
+                self.rcconf_file = rcconf_dir + '/' + self.name
+        else:
+            rcfiles = [ '/etc/rc.conf', '/etc/rc.conf.local', '/usr/local/etc/rc.conf' ]
+            for rcfile in rcfiles:
+                if os.path.isfile(self.rootdir + rcfile):
+                    self.rcconf_file = self.rootdir + rcfile
 
         rc, stdout, stderr = self.execute_command("%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments))
         cmd = "%s %s %s %s" % (self.svc_cmd, self.name, 'rcvar', self.arguments)
@@ -1442,6 +1471,8 @@ def main():
             enabled = dict(type='bool'),
             runlevel = dict(required=False, default='default'),
             arguments = dict(aliases=['args'], default=''),
+            rootdir=dict(default=None, aliases=['jail'], required=False),
+            wrapper=dict(default='', required=False),
             must_exist = dict(type='bool', default=True),
         ),
         supports_check_mode=True

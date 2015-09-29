@@ -48,7 +48,11 @@ options:
         choices: [ "yes", "no" ]
         description:
             - If I(yes), indicates that the group created is a system group.
-
+    rootdir:
+        description:
+    	    - If the job should be modified in jail (FreeBSD) or chroot
+	required: false
+	default: null
 '''
 
 EXAMPLES = '''
@@ -86,10 +90,17 @@ class Group(object):
         self.name       = module.params['name']
         self.gid        = module.params['gid']
         self.system     = module.params['system']
+        self.rootdir    = module.params['rootdir']
         self.syslogging = False
 
     def execute_command(self, cmd):
-        if self.syslogging:
+
+        if self.rootdir:
+    	    self.rootdir = self.rootdir + '/'
+    	    self.wrapper = [self.module.get_bin_path('chroot', True), self.rootdir]
+	    cmd = self.wrapper + cmd
+	    
+	if self.syslogging:
             syslog.openlog('ansible-%s' % os.path.basename(__file__))
             syslog.syslog(syslog.LOG_NOTICE, 'Command %s' % '|'.join(cmd))
 
@@ -225,6 +236,23 @@ class FreeBsdGroup(Group):
     platform = 'FreeBSD'
     distribution = None
     GROUPFILE = '/etc/group'
+    
+    def get_gid(self):
+        cmd = [self.module.get_bin_path('pw', True), 'groupshow', self.name]
+	info = []
+	(rc, line, err) = self.execute_command(cmd)
+	line = line.strip()
+	info = line.split(':')
+	return (info[0], info[1], int(info[2]))
+
+    def group_exists(self):
+        cmd = [self.module.get_bin_path('pw', True), 'groupshow', self.name]
+        return not self.execute_command(cmd)[0]
+
+    def group_info(self):
+        if not self.group_exists():
+            return False
+        return list(self.get_gid())
 
     def group_del(self):
         cmd = [self.module.get_bin_path('pw', True), 'groupdel', self.name]
@@ -388,6 +416,7 @@ def main():
             state=dict(default='present', choices=['present', 'absent'], type='str'),
             name=dict(required=True, type='str'),
             gid=dict(default=None, type='str'),
+            rootdir=dict(required=True, aliases=['basedir'], type='str'),
             system=dict(default=False, type='bool'),
         ),
         supports_check_mode=True

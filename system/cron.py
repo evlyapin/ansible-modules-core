@@ -123,6 +123,11 @@ options:
     version_added: "2.0"
     required: false
     default: false
+  rootdir:
+    description:
+      - If the job should be modified in jail or chroot
+    required: false
+    default: null
 requirements:
   - cron
 author:
