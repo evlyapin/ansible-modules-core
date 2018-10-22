@@ -14,16 +14,13 @@ jobs:
             #sudo /tmp/docker/dockerd -H fd://
             sudo ps ax|grep dockerd
             sudo cat /var/run/docker.pid
-      - run:
-          name: Pull the image
-          command: |
             TAG=$CIRCLE_BUILD_NUM
             pwd
-            export PATH=\$PATH:/tmp/docker
-            cd .circleci 
-            sudo docker build -t myimage:$TAG .
-            sudo docker login -u $DOCKER_USER -p $DOCKER_PASS
-            sudo docker push overgear/og-backend/myimage:$TAG
+            cd .circleci
+            whereis docker
+            sudo /usr/bin/docker build -t myimage:$TAG .
+            sudo /usr/bin/docker login -u $DOCKER_USER -p $DOCKER_PASS
+            sudo /usr/bin/docker push overgear/og-backend/myimage:$TAG
       
   test:
     docker:
