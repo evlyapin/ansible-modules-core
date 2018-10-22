@@ -3,7 +3,7 @@ jobs:
   build:
     docker:
       - image: circleci/node:4.8.2
-    working_directory: /app
+    working_directory: ~/app
     steps:
       - checkout
       - run:
@@ -16,7 +16,7 @@ jobs:
   test:
     docker:
       - image: library/node:carbon
-    working_directory: /app
+    working_directory: ~/app
     steps:
       - checkout
       - run: echo "hello world"
