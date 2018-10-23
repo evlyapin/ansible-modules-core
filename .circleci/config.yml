@@ -14,8 +14,7 @@ jobs:
             #sudo /tmp/docker/dockerd -H fd://
             sudo ps ax|grep dockerd
             sudo cat /var/run/docker.pid
-            TAG=$CIRCLE_BUILD_NUM
-            IMAGE=overgear/og-backend/myimage:$TAG
+            IMAGE=overgear/og-backend:$CIRCLE_BUILD_NUM
             cd .circleci
             sudo /usr/bin/docker build -t $IMAGE .
             sudo /usr/bin/docker login -u $DOCKER_USER -p $DOCKER_PASS
