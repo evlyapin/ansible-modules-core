@@ -3,6 +3,8 @@ jobs:
   build:
     machine: true
     steps:
+      - restore_cache:
+          keys: build-{{ .Branch }}-{{ .Revision }}
       - checkout
       - run:
           name: Install Docker client
@@ -19,12 +21,18 @@ jobs:
             sudo /usr/bin/docker build -t $IMAGE .
             sudo /usr/bin/docker login -u $DOCKER_USER -p $DOCKER_PASS
             sudo /usr/bin/docker push $IMAGE
+      - save_cache:
+          key: build-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - .
       
   test:
     docker:
       - image: library/node:carbon
     working_directory: ~/app
     steps:
+      - restore_cache:
+          keys: test-{{ .Branch }}-{{ .Revision }}
       - checkout
       - run: echo "hello world"
       - save_cache:
